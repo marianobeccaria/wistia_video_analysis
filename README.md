@@ -70,4 +70,7 @@ AWS is recommended for this project:
   * unique visitors
   * visitor country/IP distribution
   * Facebook vs YouTube comparison
-  
+
+## Assumptions
+
+* Channel mapping is inferred from Wistia media names and should be confirmed with the SME/business owner.
