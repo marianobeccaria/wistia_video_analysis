@@ -24,6 +24,9 @@ ingestion:
   page_size: 100
   incremental_watermark_field: updated_at
 
+local_bronze_dir: data/bronze/wistia
+local_silver_dir: data/silver/wistia
+
 storage:
   bronze_prefix: bronze/wistia
   silver_prefix: silver/wistia
