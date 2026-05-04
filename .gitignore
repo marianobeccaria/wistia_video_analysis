@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environments
+.env
+.env.*
+.venv
+!.env.example
+*.env
+
+# Data files — never commit raw data
+data/
+*.csv
+*.parquet
+*.json
+
+# CDK
+cdk.out/
+.cdk.staging/
+# CDK config/context files are source files
+!cdk/cdk.json
+!cdk/cdk.context.json
+
+
+# AWS / Credentials (NEVER commit these)
+.aws/
+*.pem
+*.key
+secrets.yml
+secrets.yaml
+.env.local
+
+# Jupyter / VSCode
+.ipynb_checkpoints/
+.vscode/
+.claude
+.codex
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Conda
+*.conda
+

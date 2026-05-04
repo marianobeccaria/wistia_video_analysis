@@ -1,0 +1,32 @@
+project:
+  name: wistia_video_analysis
+  environment: dev
+
+wistia:
+  base_url: https://api.wistia.com/modern
+  api_version: "2026-03"
+  media:
+    - media_id: gskhw4w4lm
+      channel: Facebook
+    - media_id: v08dlrgr7v
+      channel: YouTube
+  endpoints:
+    media_stats: /stats/medias/{media_id}
+    media_engagement: /stats/medias/{media_id}/engagement
+    visitor_stats: /stats/visitors/{visitor_key}
+
+ingestion:
+  request_timeout_seconds: 30
+  max_retries: 5
+  page_size: 100
+  incremental_watermark_field: updated_at
+
+storage:
+  bronze_prefix: bronze/wistia
+  silver_prefix: silver/wistia
+  gold_prefix: gold/wistia
+
+tables:
+  dim_media: dim_media
+  dim_visitor: dim_visitor
+  fact_media_engagement: fact_media_engagement
