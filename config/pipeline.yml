@@ -11,8 +11,11 @@ wistia:
     - media_id: v08dlrgr7v
       channel: YouTube
   endpoints:
+    medias: /medias
     media_stats: /stats/medias/{media_id}
+    media_stats_by_date: /stats/medias/{media_id}/by_date
     media_engagement: /stats/medias/{media_id}/engagement
+    events: /stats/events
     visitor_stats: /stats/visitors/{visitor_key}
 
 ingestion:
