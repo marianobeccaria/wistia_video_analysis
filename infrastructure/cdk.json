@@ -10,7 +10,10 @@
       "requirements*.txt",
       "**/__init__.py",
       "**/__pycache__",
-      "tests"
+      "tests",
+      ".env",
+      ".env.*"
+
     ]
   },
   "context": {
