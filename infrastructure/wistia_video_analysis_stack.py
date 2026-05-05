@@ -31,6 +31,16 @@ class WistiaVideoAnalysisStack(Stack):
         silver_prefix = os.getenv("SILVER_PREFIX", "silver/wistia")
         gold_prefix = os.getenv("GOLD_PREFIX", "gold/wistia")
 
+        # Gold table names are configurable so the same stack can be reused across
+        # environments without changing code. These names become Athena table names
+        # inside the Glue database.
+        dim_media_table_name = os.getenv("DIM_MEDIA_TABLE_NAME", "dim_media")
+        dim_visitor_table_name = os.getenv("DIM_VISITOR_TABLE_NAME", "dim_visitor")
+        fact_media_engagement_table_name = os.getenv(
+            "FACT_MEDIA_ENGAGEMENT_TABLE_NAME",
+            "fact_media_engagement",
+        )
+
         glue_database_name = os.getenv("GLUE_DATABASE_NAME", "wistia_video_analytics")
         glue_role_name = os.getenv(
             "GLUE_ROLE_NAME",
@@ -128,7 +138,9 @@ class WistiaVideoAnalysisStack(Stack):
             )
         )
 
-        glue.CfnDatabase(
+        # Glue database is the logical catalog namespace Athena queries from.
+        # The external gold tables below are registered inside this database
+        glue_database = glue.CfnDatabase(
             self,
             "WistiaGlueDatabase",
             catalog_id=self.account,
@@ -136,6 +148,16 @@ class WistiaVideoAnalysisStack(Stack):
                 name=glue_database_name,
                 description="Glue database for Wistia video analytics bronze, silver, and gold tables.",
             ),
+        )
+
+        gold_tables = self._create_gold_tables(
+            database=glue_database,
+            database_name=glue_database_name,
+            bucket=data_bucket,
+            gold_prefix=gold_prefix,
+            dim_media_table_name=dim_media_table_name,
+            dim_visitor_table_name=dim_visitor_table_name,
+            fact_media_engagement_table_name=fact_media_engagement_table_name,
         )
 
         self._deploy_prefix_placeholders(
@@ -160,7 +182,11 @@ class WistiaVideoAnalysisStack(Stack):
         CfnOutput(self, "WistiaDataLakeBucketName", value=data_bucket.bucket_name)
         CfnOutput(self, "WistiaGlueRoleArn", value=glue_role.role_arn)
         CfnOutput(self, "WistiaGlueDatabaseName", value=glue_database_name)
+        CfnOutput(self, "WistiaDimMediaTableName", value=dim_media_table_name)
+        CfnOutput(self, "WistiaDimVisitorTableName", value=dim_visitor_table_name)
+        CfnOutput(self, "WistiaFactMediaEngagementTableName", value=fact_media_engagement_table_name)
         CfnOutput(self, "WistiaApiTokenSecretName", value=wistia_api_secret.secret_name)
+
 
         # Add Script Upload + Job Definitions
         project_root = Path(__file__).resolve().parents[1]
@@ -332,6 +358,167 @@ class WistiaVideoAnalysisStack(Stack):
                 script_location=script_location,
             ),
             default_arguments=default_arguments,
+        )
+
+    def _create_gold_tables(
+        self,
+        *,
+        database: glue.CfnDatabase,
+        database_name: str,
+        bucket: s3.IBucket,
+        gold_prefix: str,
+        dim_media_table_name: str,
+        dim_visitor_table_name: str,
+        fact_media_engagement_table_name: str,
+    ) -> list[glue.CfnTable]:
+        """Create explicit Glue tables for the gold analytics model.
+
+        Dimension tables are unpartitioned. The fact table is partitioned by
+        date and media_id, matching the Spark write layout in silver_to_gold.py.
+        """
+        
+        dim_media_table = self._create_external_parquet_table(
+            table_id="WistiaDimMediaTable",
+            database_name=database_name,
+            table_name=dim_media_table_name,
+            location=f"s3://{bucket.bucket_name}/{gold_prefix}/dim_media/",
+            columns=[
+                ("media_id", "string"),
+                ("wistia_numeric_id", "bigint"),
+                ("title", "string"),
+                ("description", "string"),
+                ("channel", "string"),
+                ("duration_seconds", "double"),
+                ("media_type", "string"),
+                ("status", "string"),
+                ("archived", "boolean"),
+                ("created_at", "timestamp"),
+                ("updated_at", "timestamp"),
+                ("gold_loaded_at", "timestamp"),
+            ],
+        )
+
+        dim_visitor_table = self._create_external_parquet_table(
+            table_id="WistiaDimVisitorTable",
+            database_name=database_name,
+            table_name=dim_visitor_table_name,
+            location=f"s3://{bucket.bucket_name}/{gold_prefix}/dim_visitor/",
+            columns=[
+                ("visitor_id", "string"),
+                ("country", "string"),
+                ("region", "string"),
+                ("city", "string"),
+                ("browser", "string"),
+                ("browser_version", "string"),
+                ("platform", "string"),
+                ("mobile", "boolean"),
+                ("first_seen_at", "timestamp"),
+                ("last_seen_at", "timestamp"),
+                ("event_count", "bigint"),
+                ("distinct_media_count", "bigint"),
+                ("avg_percent_viewed", "double"),
+                ("max_percent_viewed", "double"),
+                ("gold_loaded_at", "timestamp"),
+            ],
+        )
+
+        fact_media_engagement_table = self._create_external_parquet_table(
+            table_id="WistiaFactMediaEngagementTable",
+            database_name=database_name,
+            table_name=fact_media_engagement_table_name,
+            location=f"s3://{bucket.bucket_name}/{gold_prefix}/fact_media_engagement/",
+            columns=[
+                ("visitor_id", "string"),
+                ("play_count", "bigint"),
+                ("play_rate", "double"),
+                ("total_watch_time_seconds", "double"),
+                ("total_watch_time_hours", "double"),
+                ("watched_percent", "double"),
+                ("media_load_count", "bigint"),
+                ("media_play_count", "bigint"),
+                ("media_hours_watched", "double"),
+                ("gold_loaded_at", "timestamp"),
+            ],
+            partition_keys=[
+                ("date", "date"),
+                ("media_id", "string"),
+            ],
+
+            # Athena partition projection lets Athena calculate partition
+            # locations from query predicates instead of requiring a crawler
+            # or MSCK REPAIR TABLE after every pipeline run.
+            parameters={
+                "projection.enabled": "true",
+                "projection.date.type": "date",
+                "projection.date.format": "yyyy-MM-dd",
+                "projection.date.range": "2024-01-01,NOW",
+                "projection.date.interval": "1",
+                "projection.date.interval.unit": "DAYS",
+                "projection.media_id.type": "enum",
+                "projection.media_id.values": "gskhw4w4lm,v08dlrgr7v",
+                "storage.location.template": (
+                    f"s3://{bucket.bucket_name}/{gold_prefix}/fact_media_engagement/"
+                    "date=${date}/media_id=${media_id}/"
+                ),
+            },
+        )
+
+        tables = [dim_media_table, dim_visitor_table, fact_media_engagement_table]
+        for table in tables:
+            table.add_dependency(database)
+
+        return tables
+
+    def _create_external_parquet_table(
+        self,
+        *,
+        table_id: str,
+        database_name: str,
+        table_name: str,
+        location: str,
+        columns: list[tuple[str, str]],
+        partition_keys: list[tuple[str, str]] | None = None,
+        parameters: dict[str, str] | None = None,
+    ) -> glue.CfnTable:
+        """Create a Glue external table over Parquet files in S3.
+
+        The table stores metadata only. The actual gold data remains in S3,
+        and Athena uses this schema plus the S3 location to query it.
+        """        
+        
+        table_parameters = {
+            "classification": "parquet",
+            "EXTERNAL": "TRUE",
+        }
+        if parameters:
+            table_parameters.update(parameters)
+
+        return glue.CfnTable(
+            self,
+            table_id,
+            catalog_id=self.account,
+            database_name=database_name,
+            table_input=glue.CfnTable.TableInputProperty(
+                name=table_name,
+                table_type="EXTERNAL_TABLE",
+                parameters=table_parameters,
+                partition_keys=[
+                    glue.CfnTable.ColumnProperty(name=name, type=column_type)
+                    for name, column_type in (partition_keys or [])
+                ],
+                storage_descriptor=glue.CfnTable.StorageDescriptorProperty(
+                    location=location,
+                    input_format="org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
+                    output_format="org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat",
+                    serde_info=glue.CfnTable.SerdeInfoProperty(
+                        serialization_library="org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe",
+                    ),
+                    columns=[
+                        glue.CfnTable.ColumnProperty(name=name, type=column_type)
+                        for name, column_type in columns
+                    ],
+                ),
+            ),
         )
 
 
