@@ -18,6 +18,8 @@ data/
 *.csv
 *.parquet
 *.json
+docs/mynotes
+docs/mynotes/*
 
 # CDK
 infrastructure/cdk.out/
