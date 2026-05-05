@@ -75,6 +75,20 @@ class WistiaVideoAnalysisStack(Stack):
             f"{project_name}-{environment_name}-gold-quality",
         )
 
+        # Glue Workflow coordinates the four Glue jobs as one pipeline run.
+        # The schedule is kept configurable so dev can run manually while prod can run daily.
+        workflow_name = os.getenv(
+            "GLUE_WORKFLOW_NAME",
+            f"{project_name}-{environment_name}-workflow",
+        )
+        pipeline_schedule = os.getenv("PIPELINE_SCHEDULE", "cron(0 2 * * ? *)")
+        schedule_enabled = os.getenv("PIPELINE_SCHEDULE_ENABLED", "false").lower() == "true"
+
+        scheduled_ingestion_trigger_name = f"{workflow_name}-scheduled-ingest"
+        bronze_to_silver_trigger_name = f"{workflow_name}-bronze-to-silver"
+        silver_to_gold_trigger_name = f"{workflow_name}-silver-to-gold"
+        gold_quality_trigger_name = f"{workflow_name}-gold-quality"
+
         additional_python_modules = os.getenv(
             "GLUE_ADDITIONAL_PYTHON_MODULES",
             "requests==2.33.0,tenacity==9.1.4,PyYAML==6.0.3,python-dotenv==1.2.2",
@@ -278,10 +292,78 @@ class WistiaVideoAnalysisStack(Stack):
             default_arguments=common_default_arguments,
         )
 
+        # Glue Workflow gives us a managed orchestration graph for the pipeline.
+        # The workflow itself does not process data; it controls job order and state.
+        workflow = glue.CfnWorkflow(
+            self,
+            "WistiaPipelineWorkflow",
+            name=workflow_name,
+            description="Runs Wistia ingestion, silver/gold transforms, and gold quality checks.",
+            max_concurrent_runs=1,
+        )
+
+        # Scheduled trigger is disabled by default to avoid surprise runs on deploy.
+        # Set PIPELINE_SCHEDULE_ENABLED=true when you are ready for automatic daily runs.
+        scheduled_ingestion_trigger = glue.CfnTrigger(
+            self,
+            "WistiaScheduledIngestionTrigger",
+            name=scheduled_ingestion_trigger_name,
+            type="SCHEDULED",
+            workflow_name=workflow_name,
+            schedule=pipeline_schedule,
+            start_on_creation=schedule_enabled,
+            actions=[
+                glue.CfnTrigger.ActionProperty(
+                    job_name=ingestion_job.name,
+                )
+            ],
+        )
+
+        bronze_to_silver_trigger = self._create_success_trigger(
+            trigger_id="WistiaBronzeToSilverWorkflowTrigger",
+            trigger_name=bronze_to_silver_trigger_name,
+            workflow_name=workflow_name,
+            previous_job=ingestion_job,
+            next_job=bronze_to_silver_job,
+        )
+
+        silver_to_gold_trigger = self._create_success_trigger(
+            trigger_id="WistiaSilverToGoldWorkflowTrigger",
+            trigger_name=silver_to_gold_trigger_name,
+            workflow_name=workflow_name,
+            previous_job=bronze_to_silver_job,
+            next_job=silver_to_gold_job,
+        )
+
+        gold_quality_trigger = self._create_success_trigger(
+            trigger_id="WistiaGoldQualityWorkflowTrigger",
+            trigger_name=gold_quality_trigger_name,
+            workflow_name=workflow_name,
+            previous_job=silver_to_gold_job,
+            next_job=gold_quality_job,
+        )
+
+        for trigger in (
+            scheduled_ingestion_trigger,
+            bronze_to_silver_trigger,
+            silver_to_gold_trigger,
+            gold_quality_trigger,
+        ):
+            trigger.add_dependency(workflow)
+
+        scheduled_ingestion_trigger.add_dependency(ingestion_job)
+
+
         CfnOutput(self, "WistiaIngestionJobName", value=ingestion_job.name)
         CfnOutput(self, "WistiaBronzeToSilverJobName", value=bronze_to_silver_job.name)
         CfnOutput(self, "WistiaSilverToGoldJobName", value=silver_to_gold_job.name)
         CfnOutput(self, "WistiaGoldQualityJobName", value=gold_quality_job.name)
+        CfnOutput(self, "WistiaGlueWorkflowName", value=workflow_name)
+        CfnOutput(self, "WistiaScheduledIngestionTriggerName", value=scheduled_ingestion_trigger_name)
+        CfnOutput(self, "WistiaBronzeToSilverTriggerName", value=bronze_to_silver_trigger_name)
+        CfnOutput(self, "WistiaSilverToGoldTriggerName", value=silver_to_gold_trigger_name)
+        CfnOutput(self, "WistiaGoldQualityTriggerName", value=gold_quality_trigger_name)
+
 
     def _deploy_glue_sources(
         self,
@@ -359,6 +441,50 @@ class WistiaVideoAnalysisStack(Stack):
             ),
             default_arguments=default_arguments,
         )
+
+    def _create_success_trigger(
+        self,
+        *,
+        trigger_id: str,
+        trigger_name: str,
+        workflow_name: str,
+        previous_job: glue.CfnJob,
+        next_job: glue.CfnJob,
+    ) -> glue.CfnTrigger:
+        """Create a conditional trigger that runs next_job after previous_job succeeds.
+
+        This is the Glue Workflow equivalent of a simple DAG edge:
+        previous job SUCCEEDED -> start next job.
+        """
+        trigger = glue.CfnTrigger(
+            self,
+            trigger_id,
+            name=trigger_name,
+            type="CONDITIONAL",
+            workflow_name=workflow_name,
+            start_on_creation=True,
+            predicate=glue.CfnTrigger.PredicateProperty(
+                logical="AND",
+                conditions=[
+                    glue.CfnTrigger.ConditionProperty(
+                        job_name=previous_job.name,
+                        logical_operator="EQUALS",
+                        state="SUCCEEDED",
+                    )
+                ],
+            ),
+            actions=[
+                glue.CfnTrigger.ActionProperty(
+                    job_name=next_job.name,
+                )
+            ],
+        )
+
+        trigger.add_dependency(previous_job)
+        trigger.add_dependency(next_job)
+
+        return trigger
+
 
     def _create_gold_tables(
         self,
