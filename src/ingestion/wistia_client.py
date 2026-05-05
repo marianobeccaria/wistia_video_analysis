@@ -3,7 +3,11 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+from requests.auth import HTTPBasicAuth
+
+
 from urllib.parse import urljoin
 
 import requests
@@ -23,12 +27,17 @@ class WistiaAuthError(WistiaAPIError):
 class WistiaNotFoundError(WistiaAPIError):
     pass
 
+AuthScheme = Literal["basic", "bearer"]
+BasicAuthTokenPosition = Literal["username", "password"]
 
 @dataclass(frozen=True)
 class WistiaClientConfig:
     api_token: str
     base_url: str
     api_version: str = "2026-03"
+    auth_scheme: AuthScheme = "basic"
+    basic_auth_username: str = "api"
+    basic_auth_token_position: BasicAuthTokenPosition = "password"
     timeout_seconds: int = 30
     max_retries: int = 5
 
@@ -39,11 +48,21 @@ class WistiaClient:
         self.session = requests.Session()
         self.session.headers.update(
             {
-                "Authorization": f"Bearer {config.api_token}",
                 "Accept": "application/json",
                 "X-Wistia-API-Version": config.api_version,
             }
         )
+
+        if config.auth_scheme == "basic":
+            if config.basic_auth_token_position == "username":
+                self.session.auth = HTTPBasicAuth(config.api_token, "")
+            else:
+                self.session.auth = HTTPBasicAuth(config.basic_auth_username, config.api_token)
+        elif config.auth_scheme == "bearer":
+            self.session.headers["Authorization"] = f"Bearer {config.api_token}"
+        else:
+            raise ValueError(f"Unsupported Wistia auth scheme: {config.auth_scheme}")
+
 
     def get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any] | list[Any]:
         url = urljoin(f"{self.config.base_url.rstrip('/')}/", path.lstrip("/"))

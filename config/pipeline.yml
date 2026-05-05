@@ -5,6 +5,11 @@ project:
 wistia:
   base_url: https://api.wistia.com/modern
   api_version: "2026-03"
+  auth:
+    scheme: basic
+    basic_username: api
+    basic_token_position: password
+
   media:
     - media_id: gskhw4w4lm
       channel: Facebook
