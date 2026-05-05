@@ -8,6 +8,7 @@ from pathlib import Path
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from src.common.paths import is_s3_uri, join_path, load_yaml, resolve_layer_path
+from pyspark.errors.exceptions.captured import AnalysisException
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,13 +32,20 @@ def read_bronze_dataset(spark: SparkSession, bronze_dir: str, dataset: str) -> D
         LOGGER.warning("Skipping missing bronze dataset: %s", dataset_path)
         return None
 
-    return (
-        spark.read.option("multiLine", True)
-        .option("recursiveFileLookup", True)
-        .json(dataset_path)
-        .withColumn("source_file", F.input_file_name())
-        .withColumn("ingest_date", F.to_date("ingested_at"))
-    )
+    try:
+        return (
+            spark.read.option("multiLine", True)
+            .option("recursiveFileLookup", True)
+            .option("pathGlobFilter", "*.json")
+            .json(dataset_path)
+            .withColumn("source_file", F.input_file_name())
+            .withColumn("ingest_date", F.to_date("ingested_at"))
+        )
+    except AnalysisException as exc:
+        if "UNABLE_TO_INFER_SCHEMA" in str(exc):
+            LOGGER.warning("Skipping bronze dataset with no JSON files: %s", dataset_path)
+            return None
+        raise
 
 # Writes each cleaned DataFrame as Parquet. 
 # It uses overwrite mode and partitions by columns like ingest_date and media_id
