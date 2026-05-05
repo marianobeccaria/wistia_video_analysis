@@ -2,25 +2,19 @@ from __future__ import annotations
 
 import argparse
 import logging
-from pathlib import Path
 from typing import Any
 
 import yaml
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
+from src.common.paths import join_path, load_yaml, resolve_layer_path
+
 
 LOGGER = logging.getLogger(__name__)
 
 # reads config/pipeline.yml
 def load_config(config_path: str) -> dict[str, Any]:
-    with Path(config_path).open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
-
-# looks for paths in either storage or the top level of config. 
-# Makes the script tolerant of of current config layout
-def config_path(config: dict[str, Any], key: str, default: str) -> str:
-    storage = config.get("storage", {})
-    return storage.get(key) or config.get(key) or default
+    return load_yaml(config_path)
 
 # starts Spark and sets the timezone to UTC.
 def create_spark() -> SparkSession:
@@ -39,7 +33,8 @@ def latest_by(df: DataFrame, keys: list[str], order_col: str = "ingested_at") ->
 # Writes a DataFrame as Parquet under data/gold/wistia/<table>. 
 # It can also partition tables, like the fact table by date and media_id.
 def write_gold(df: DataFrame, gold_dir: str, table: str, partition_cols: list[str] | None = None) -> None:
-    output_path = str(Path(gold_dir) / table)
+    output_path = join_path(gold_dir, table)
+
     writer = df.write.mode("overwrite")
     if partition_cols:
         writer = writer.partitionBy(*partition_cols)
@@ -51,13 +46,15 @@ def write_gold(df: DataFrame, gold_dir: str, table: str, partition_cols: list[st
 # and outputs several fields (media_id, title, channel, duration_seconds, status, created_at, updated_at)
 def build_dim_media(silver_dir: str) -> DataFrame:
     media = latest_by(
-        spark.read.parquet(str(Path(silver_dir) / "media_metadata")),
+        spark.read.parquet(join_path(silver_dir, "media_metadata")),
+
         ["media_id"],
         "ingested_at",
     )
 
     stats = latest_by(
-        spark.read.parquet(str(Path(silver_dir) / "media_stats")),
+        spark.read.parquet(join_path(silver_dir, "media_stats")),
+
         ["media_id"],
         "ingested_at",
     ).select("media_id", "channel")
@@ -85,7 +82,7 @@ def build_dim_media(silver_dir: str) -> DataFrame:
 # It groups by raw visitor_key. Then it picks the visitor’s latest known attributes.
 # It does not expose raw visitor_key in gold
 def build_dim_visitor(silver_dir: str) -> DataFrame:
-    events = spark.read.parquet(str(Path(silver_dir) / "events")).filter(F.col("visitor_key").isNotNull())
+    events = spark.read.parquet(join_path(silver_dir, "events")).filter(F.col("visitor_key").isNotNull())
 
     visitor_rollup = events.groupBy("visitor_key").agg(
         F.min("received_at").alias("first_seen_at"),
@@ -138,8 +135,7 @@ def build_dim_visitor(silver_dir: str) -> DataFrame:
 # reads silver/events, joins dim_media to get video duration, and estimates watch time
 # 
 def build_fact_media_engagement(silver_dir: str, dim_media: DataFrame) -> DataFrame:
-    events = spark.read.parquet(str(Path(silver_dir) / "events")).filter(F.col("visitor_key").isNotNull())
-
+    events = spark.read.parquet(join_path(silver_dir, "events")).filter(F.col("visitor_key").isNotNull())
     media_duration = dim_media.select("media_id", "duration_seconds")
     event_facts = events.join(media_duration, "media_id", "left").withColumn(
         "estimated_watch_seconds",
@@ -156,7 +152,7 @@ def build_fact_media_engagement(silver_dir: str, dim_media: DataFrame) -> DataFr
         F.sum("estimated_watch_seconds").alias("total_watch_time_seconds"),
     )
 
-    daily_stats = spark.read.parquet(str(Path(silver_dir) / "media_stats_by_date")).select(
+    daily_stats = spark.read.parquet(join_path(silver_dir, "media_stats_by_date")).select(
         "media_id",
         F.col("metric_date").alias("date"),
         F.when(F.col("load_count") > 0, F.col("play_count") / F.col("load_count")).alias("play_rate"),
@@ -188,13 +184,15 @@ def build_fact_media_engagement(silver_dir: str, dim_media: DataFrame) -> DataFr
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/pipeline.yml")
-    args = parser.parse_args()
+    parser.add_argument("--storage-mode", choices=["local", "s3"], default="local")
+    args, _ = parser.parse_known_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
     config = load_config(args.config)
-    silver_dir = config_path(config, "local_silver_dir", "data/silver/wistia")
-    gold_dir = config_path(config, "local_gold_dir", "data/gold/wistia")
+    silver_dir = resolve_layer_path(config, "silver", args.storage_mode, args.config)
+    gold_dir = resolve_layer_path(config, "gold", args.storage_mode, args.config)
+
 
     global spark
     spark = create_spark()

@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import argparse
 import logging
-from pathlib import Path
 from typing import Any
+from pathlib import Path
 
-import yaml
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from src.common.paths import is_s3_uri, join_path, load_yaml, resolve_layer_path
 
 LOGGER = logging.getLogger(__name__)
 
 
 def load_config(config_path: str) -> dict[str, Any]:
-    with Path(config_path).open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
-
+    return load_yaml(config_path)
 
 def create_spark() -> SparkSession:
     return (
@@ -28,15 +26,15 @@ def create_spark() -> SparkSession:
 # Adds source_file and ingest_date. 
 # 'source_file' helps trace a silver row back to its original raw JSON file.
 def read_bronze_dataset(spark: SparkSession, bronze_dir: str, dataset: str) -> DataFrame | None:
-    dataset_path = Path(bronze_dir) / dataset
-    if not dataset_path.exists():
+    dataset_path = join_path(bronze_dir, dataset)
+    if not is_s3_uri(dataset_path) and not Path(dataset_path).exists():
         LOGGER.warning("Skipping missing bronze dataset: %s", dataset_path)
         return None
 
     return (
         spark.read.option("multiLine", True)
         .option("recursiveFileLookup", True)
-        .json(str(dataset_path))
+        .json(dataset_path)
         .withColumn("source_file", F.input_file_name())
         .withColumn("ingest_date", F.to_date("ingested_at"))
     )
@@ -44,7 +42,7 @@ def read_bronze_dataset(spark: SparkSession, bronze_dir: str, dataset: str) -> D
 # Writes each cleaned DataFrame as Parquet. 
 # It uses overwrite mode and partitions by columns like ingest_date and media_id
 def write_silver(df: DataFrame, silver_dir: str, dataset: str, partition_cols: list[str]) -> None:
-    output_path = str(Path(silver_dir) / dataset)
+    output_path = join_path(silver_dir, dataset)
     LOGGER.info("Writing silver dataset=%s path=%s", dataset, output_path)
 
     (
@@ -208,14 +206,14 @@ def transform_visitor_stats(df: DataFrame) -> DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/pipeline.yml")
-    args = parser.parse_args()
+    parser.add_argument("--storage-mode", choices=["local", "s3"], default="local")
+    args, _ = parser.parse_known_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
     config = load_config(args.config)
-    storage = config.get("storage", {})
-    bronze_dir = storage.get("local_bronze_dir", "data/bronze/wistia")
-    silver_dir = storage.get("local_silver_dir", "data/silver/wistia")
+    bronze_dir = resolve_layer_path(config, "bronze", args.storage_mode, args.config)
+    silver_dir = resolve_layer_path(config, "silver", args.storage_mode, args.config)
 
     spark = create_spark()
 

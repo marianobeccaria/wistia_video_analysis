@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from src.common.paths import is_s3_uri, join_path, load_yaml, resolve_layer_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -19,16 +19,8 @@ class CheckResult:
     passed: bool
     details: str
 
-
 def load_config(config_path: str) -> dict[str, Any]:
-    with Path(config_path).open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
-
-
-def config_path(config: dict[str, Any], key: str, default: str) -> str:
-    storage = config.get("storage", {})
-    return storage.get(key) or config.get(key) or default
-
+    return load_yaml(config_path)
 
 def create_spark() -> SparkSession:
     return (
@@ -37,14 +29,12 @@ def create_spark() -> SparkSession:
         .getOrCreate()
     )
 
-
 def read_gold_table(spark: SparkSession, gold_dir: str, table_name: str) -> DataFrame:
-    table_path = Path(gold_dir) / table_name
-    if not table_path.exists():
+    table_path = join_path(gold_dir, table_name)
+    if not is_s3_uri(table_path) and not Path(table_path).exists():
         raise FileNotFoundError(f"Missing gold table path: {table_path}")
 
-    return spark.read.parquet(str(table_path))
-
+    return spark.read.parquet(table_path)
 
 def add_result(results: list[CheckResult], name: str, passed: bool, details: str) -> None:
     results.append(CheckResult(name=name, passed=passed, details=details))
@@ -249,12 +239,14 @@ def log_results(results: list[CheckResult]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/pipeline.yml")
-    args = parser.parse_args()
+    parser.add_argument("--storage-mode", choices=["local", "s3"], default="local")
+    args, _ = parser.parse_known_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
     config = load_config(args.config)
-    gold_dir = config_path(config, "local_gold_dir", "data/gold/wistia")
+    gold_dir = resolve_layer_path(config, "gold", args.storage_mode, args.config)
+
 
     expected_media = config.get("wistia", {}).get("media", [])
     expected_media_count = len(expected_media)

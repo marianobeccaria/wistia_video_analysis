@@ -1,26 +1,27 @@
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import yaml
+import boto3
 from dotenv import load_dotenv
 
+from src.common.paths import join_path, load_yaml, resolve_layer_path, write_text
 from src.ingestion.wistia_client import WistiaClient, WistiaClientConfig
+
 
 LOGGER = logging.getLogger(__name__)
 VISITOR_KEY_NAMES = {"visitor_key", "visitorKey"}
 
-
 def load_pipeline_config(config_path: str = "config/pipeline.yml") -> dict[str, Any]:
-    with Path(config_path).open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
-
+    return load_yaml(config_path)
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -47,10 +48,39 @@ def collect_values_by_key(value: Any, key_names: set[str]) -> set[str]:
 
     return values
 
+def get_wistia_api_token(secret_name: str | None = None) -> str:
+    api_token = os.getenv("WISTIA_API_TOKEN")
+    if api_token:
+        return api_token
 
+    if not secret_name:
+        raise RuntimeError("Missing WISTIA_API_TOKEN and Wistia secret name.")
+
+    secret_value = boto3.client("secretsmanager").get_secret_value(SecretId=secret_name)
+    secret_string = secret_value.get("SecretString")
+    if not secret_string:
+        raise RuntimeError(f"Secret {secret_name} does not contain a SecretString.")
+
+    try:
+        parsed_secret = json.loads(secret_string)
+    except json.JSONDecodeError:
+        return secret_string
+
+    token = parsed_secret.get("token")
+    if not token:
+        raise RuntimeError(f"Secret {secret_name} must contain a 'token' key.")
+
+    return token
+
+
+def sanitize_file_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.=-]+", "_", value)
+
+# accepts output_base_uri: str instead of output_base_dir: Path,
+# builds paths with join_path, and writes with write_text
 def write_raw_json(
     *,
-    output_base_dir: Path,
+    output_base_uri: str,
     dataset: str,
     run_id: str,
     payload: Any,
@@ -60,12 +90,11 @@ def write_raw_json(
     channel: str | None = None,
     page: int | None = None,
     record_key: str | None = None,
-) -> Path:
+) -> str:
     ingested_at = utc_now()
     ingest_date = ingested_at.date().isoformat()
 
     path_parts = [
-        output_base_dir,
         dataset,
         f"ingest_date={ingest_date}",
         f"run_id={run_id}",
@@ -74,18 +103,15 @@ def write_raw_json(
     if media_id:
         path_parts.append(f"media_id={media_id}")
 
-    output_dir = Path(*path_parts)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     file_name_parts = [dataset]
     if media_id:
         file_name_parts.append(media_id)
     if page is not None:
         file_name_parts.append(f"page_{page:05d}")
     if record_key:
-        file_name_parts.append(record_key)
+        file_name_parts.append(sanitize_file_part(record_key))
 
-    output_path = output_dir / ("_".join(file_name_parts) + ".json")
+    output_location = join_path(output_base_uri, *path_parts, "_".join(file_name_parts) + ".json")
 
     envelope = {
         "pipeline_run_id": run_id,
@@ -99,34 +125,38 @@ def write_raw_json(
         "payload": payload,
     }
 
-    output_path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
-    LOGGER.info("Wrote raw %s payload to %s", dataset, output_path)
+    write_text(output_location, json.dumps(envelope, indent=2))
+    LOGGER.info("Wrote raw %s payload to %s", dataset, output_location)
 
-    return output_path
+    return output_location
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config/pipeline.yml")
+    parser.add_argument("--storage-mode", choices=["local", "s3"], default=os.getenv("PIPELINE_STORAGE_MODE", "local"))
+    parser.add_argument("--wistia-secret-name", default=os.getenv("WISTIA_SECRET_NAME"))
+    parser.add_argument("--start-date", default=os.getenv("WISTIA_START_DATE"))
+    parser.add_argument("--end-date", default=os.getenv("WISTIA_END_DATE"))
+    args, _ = parser.parse_known_args()
 
     load_dotenv()
     load_dotenv("infrastructure/.env", override=False)
 
-    api_token = os.getenv("WISTIA_API_TOKEN")
-    if not api_token:
-        raise RuntimeError("Missing WISTIA_API_TOKEN. Add it to .env or infrastructure/.env.")
-
-    pipeline_config = load_pipeline_config()
+    pipeline_config = load_pipeline_config(args.config)
     wistia_config = pipeline_config["wistia"]
     ingestion_config = pipeline_config.get("ingestion", {})
-    storage_config = pipeline_config.get("storage", {})
 
     run_id = utc_now().strftime("%Y%m%dT%H%M%SZ") + f"-{uuid4().hex[:8]}"
-    output_base_dir = Path(storage_config.get("local_bronze_dir", "data/bronze/wistia"))
+    output_base_uri = resolve_layer_path(pipeline_config, "bronze", args.storage_mode, args.config)
 
-    start_date = os.getenv("WISTIA_START_DATE")
-    end_date = os.getenv("WISTIA_END_DATE")
+    api_token = get_wistia_api_token(args.wistia_secret_name)
+
+    start_date = args.start_date
+    end_date = args.end_date
     if not start_date or not end_date:
         start_date, end_date = default_date_window()
+
 
     client = WistiaClient(
         WistiaClientConfig(
@@ -151,7 +181,7 @@ def main() -> None:
     visitor_keys: set[str] = set()
     
     write_raw_json(
-        output_base_dir=output_base_dir,
+        output_base_uri=output_base_uri,
         dataset="media_metadata",
         run_id=run_id,
         payload=medias_payload,
@@ -167,7 +197,7 @@ def main() -> None:
         media_stats_endpoint = endpoints["media_stats"].format(media_id=media_id)
         media_stats_payload = client.get_json(media_stats_endpoint)
         write_raw_json(
-            output_base_dir=output_base_dir,
+            output_base_uri=output_base_uri,
             dataset="media_stats",
             run_id=run_id,
             payload=media_stats_payload,
@@ -179,7 +209,7 @@ def main() -> None:
         media_engagement_endpoint = endpoints["media_engagement"].format(media_id=media_id)
         media_engagement_payload = client.get_json(media_engagement_endpoint)
         write_raw_json(
-            output_base_dir=output_base_dir,
+            output_base_uri=output_base_uri,
             dataset="media_engagement",
             run_id=run_id,
             payload=media_engagement_payload,
@@ -192,7 +222,7 @@ def main() -> None:
         stats_by_date_params = {"start_date": start_date, "end_date": end_date}
         media_stats_by_date_payload = client.get_json(media_stats_by_date_endpoint, params=stats_by_date_params)
         write_raw_json(
-            output_base_dir=output_base_dir,
+            output_base_uri=output_base_uri,
             dataset="media_stats_by_date",
             run_id=run_id,
             payload=media_stats_by_date_payload,
@@ -218,7 +248,7 @@ def main() -> None:
                 break
 
             write_raw_json(
-                output_base_dir=output_base_dir,
+                output_base_uri=output_base_uri,
                 dataset="events",
                 run_id=run_id,
                 payload=events_payload,
@@ -242,7 +272,7 @@ def main() -> None:
         visitor_safe_key = visitor_key.replace("/", "_")
 
         write_raw_json(
-            output_base_dir=output_base_dir,
+            output_base_uri=output_base_uri,
             dataset="visitor_stats",
             run_id=run_id,
             payload=visitor_payload,

@@ -26,8 +26,10 @@ ingestion:
 
 local_bronze_dir: data/bronze/wistia
 local_silver_dir: data/silver/wistia
+local_gold_dir: data/gold/wistia
 
 storage:
+  s3_bucket: mbeccaria-dea-wistia-analytics
   bronze_prefix: bronze/wistia
   silver_prefix: silver/wistia
   gold_prefix: gold/wistia
