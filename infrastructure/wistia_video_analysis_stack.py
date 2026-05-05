@@ -42,15 +42,21 @@ class WistiaVideoAnalysisStack(Stack):
         Tags.of(self).add("Project", project_name)
         Tags.of(self).add("Environment", environment_name)
 
-        data_bucket = s3.Bucket(
-            self,
-            "WistiaDataLakeBucket",
-            bucket_name=bucket_name if bucket_name else None,
-            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
-            encryption=s3.BucketEncryption.S3_MANAGED,
-            enforce_ssl=True,
-            removal_policy=RemovalPolicy.RETAIN,
-        )
+        if bucket_name:
+            data_bucket = s3.Bucket.from_bucket_name(
+                self,
+                "WistiaDataLakeBucket",
+                bucket_name,
+            )
+        else:
+            data_bucket = s3.Bucket(
+                self,
+                "WistiaDataLakeBucket",
+                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+                encryption=s3.BucketEncryption.S3_MANAGED,
+                enforce_ssl=True,
+                removal_policy=RemovalPolicy.RETAIN,
+            )
 
         wistia_api_secret = secretsmanager.Secret(
             self,

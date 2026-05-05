@@ -20,11 +20,11 @@ data/
 *.json
 
 # CDK
-cdk.out/
+infrastructure/cdk.out/
 .cdk.staging/
 # CDK config/context files are source files
-!cdk/cdk.json
-!cdk/cdk.context.json
+!infrastructure/cdk.json
+!infrastructure/cdk.context.json
 
 
 # AWS / Credentials (NEVER commit these)
@@ -47,4 +47,3 @@ Thumbs.db
 
 # Conda
 *.conda
-
