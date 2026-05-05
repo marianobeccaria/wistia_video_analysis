@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 from typing import Any
 
-import yaml
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
-from src.common.paths import join_path, load_yaml, resolve_layer_path
+from src.common.paths import is_s3_uri, join_path, load_yaml, resolve_layer_path
 
 
 LOGGER = logging.getLogger(__name__)
@@ -23,6 +23,28 @@ def create_spark() -> SparkSession:
         .config("spark.sql.session.timeZone", "UTC")
         .getOrCreate()
     )
+
+
+def path_exists(spark: SparkSession, path: str) -> bool:
+    if is_s3_uri(path):
+        jvm = spark.sparkContext._jvm
+        hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+        fs_path = jvm.org.apache.hadoop.fs.Path(path)
+        fs = fs_path.getFileSystem(hadoop_conf)
+        return fs.exists(fs_path)
+
+    return Path(path).exists()
+
+
+def read_required_parquet(spark: SparkSession, silver_dir: str, table_name: str) -> DataFrame:
+    table_path = join_path(silver_dir, table_name)
+    if not path_exists(spark, table_path):
+        raise RuntimeError(
+            f"Missing required silver table: {table_path}. "
+            "Run bronze-to-silver after ingesting a date window with events."
+        )
+
+    return spark.read.parquet(table_path)
 
 # keeps only the newest row per key. 
 # latest_by(df, ["media_id"]) keeps the most
@@ -46,15 +68,13 @@ def write_gold(df: DataFrame, gold_dir: str, table: str, partition_cols: list[st
 # and outputs several fields (media_id, title, channel, duration_seconds, status, created_at, updated_at)
 def build_dim_media(silver_dir: str) -> DataFrame:
     media = latest_by(
-        spark.read.parquet(join_path(silver_dir, "media_metadata")),
-
+        read_required_parquet(spark, silver_dir, "media_metadata"),
         ["media_id"],
         "ingested_at",
     )
 
     stats = latest_by(
-        spark.read.parquet(join_path(silver_dir, "media_stats")),
-
+        read_required_parquet(spark, silver_dir, "media_stats"),
         ["media_id"],
         "ingested_at",
     ).select("media_id", "channel")
@@ -82,7 +102,7 @@ def build_dim_media(silver_dir: str) -> DataFrame:
 # It groups by raw visitor_key. Then it picks the visitor’s latest known attributes.
 # It does not expose raw visitor_key in gold
 def build_dim_visitor(silver_dir: str) -> DataFrame:
-    events = spark.read.parquet(join_path(silver_dir, "events")).filter(F.col("visitor_key").isNotNull())
+    events = read_required_parquet(spark, silver_dir, "events").filter(F.col("visitor_key").isNotNull())
 
     visitor_rollup = events.groupBy("visitor_key").agg(
         F.min("received_at").alias("first_seen_at"),
@@ -135,7 +155,7 @@ def build_dim_visitor(silver_dir: str) -> DataFrame:
 # reads silver/events, joins dim_media to get video duration, and estimates watch time
 # 
 def build_fact_media_engagement(silver_dir: str, dim_media: DataFrame) -> DataFrame:
-    events = spark.read.parquet(join_path(silver_dir, "events")).filter(F.col("visitor_key").isNotNull())
+    events = read_required_parquet(spark, silver_dir, "events").filter(F.col("visitor_key").isNotNull())
     media_duration = dim_media.select("media_id", "duration_seconds")
     event_facts = events.join(media_duration, "media_id", "left").withColumn(
         "estimated_watch_seconds",
@@ -152,7 +172,7 @@ def build_fact_media_engagement(silver_dir: str, dim_media: DataFrame) -> DataFr
         F.sum("estimated_watch_seconds").alias("total_watch_time_seconds"),
     )
 
-    daily_stats = spark.read.parquet(join_path(silver_dir, "media_stats_by_date")).select(
+    daily_stats = read_required_parquet(spark, silver_dir, "media_stats_by_date").select(
         "media_id",
         F.col("metric_date").alias("date"),
         F.when(F.col("load_count") > 0, F.col("play_count") / F.col("load_count")).alias("play_rate"),
@@ -192,7 +212,6 @@ def main() -> None:
     config = load_config(args.config)
     silver_dir = resolve_layer_path(config, "silver", args.storage_mode, args.config)
     gold_dir = resolve_layer_path(config, "gold", args.storage_mode, args.config)
-
 
     global spark
     spark = create_spark()
