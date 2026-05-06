@@ -57,14 +57,18 @@ def main() -> None:
     pipeline_config = load_pipeline_config()
     wistia_config = pipeline_config["wistia"]
     ingestion_config = pipeline_config.get("ingestion", {})
+    auth_config = wistia_config.get("auth", {})
 
     client = WistiaClient(
         WistiaClientConfig(
             api_token=api_token,
             base_url=wistia_config["base_url"],
             api_version=wistia_config.get("api_version", "2026-03"),
-            timeout_seconds=ingestion_config.get("request_timeout_seconds", 30),
-            max_retries=ingestion_config.get("max_retries", 5),
+            auth_scheme=auth_config.get("scheme", "basic"),
+            basic_auth_username=auth_config.get("basic_username", "api"),
+            basic_auth_token_position=auth_config.get("basic_token_position", "password"),
+            timeout_seconds=int(ingestion_config.get("request_timeout_seconds", 30)),
+            max_retries=int(ingestion_config.get("max_retries", 5)),
         )
     )
 

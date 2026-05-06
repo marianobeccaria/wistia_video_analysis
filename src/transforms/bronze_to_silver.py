@@ -6,7 +6,9 @@ from typing import Any
 from pathlib import Path
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
+
 from src.common.paths import is_s3_uri, join_path, load_yaml, resolve_layer_path
 from pyspark.errors.exceptions.captured import AnalysisException
 
@@ -22,6 +24,11 @@ def create_spark() -> SparkSession:
         .config("spark.sql.session.timeZone", "UTC")
         .getOrCreate()
     )
+
+def latest_by(df: DataFrame, keys: list[str], order_col: str = "ingested_at") -> DataFrame:
+    window = Window.partitionBy(*keys).orderBy(F.col(order_col).desc_nulls_last())
+    return df.withColumn("_rn", F.row_number().over(window)).filter(F.col("_rn") == 1).drop("_rn")
+
 
 # Reads all JSON files under a bronze dataset folder recursively. 
 # Adds source_file and ingest_date. 
@@ -113,18 +120,21 @@ def transform_media_stats_by_date(df: DataFrame) -> DataFrame:
         F.explode_outer("payload").alias("daily"),
     )
 
-    return daily.select(
-        "media_id",
-        "channel",
-        F.to_date("daily.date").alias("metric_date"),
-        F.col("daily.load_count").cast("long").alias("load_count"),
-        F.col("daily.play_count").cast("long").alias("play_count"),
-        F.col("daily.hours_watched").cast("double").alias("hours_watched"),
-        "pipeline_run_id",
-        F.to_timestamp("ingested_at").alias("ingested_at"),
-        "source_file",
-        F.to_date("ingested_at").alias("ingest_date"),
-    ).dropDuplicates(["media_id", "metric_date", "pipeline_run_id"])
+    rows = daily.select(
+    "media_id",
+    "channel",
+    F.to_date("daily.date").alias("metric_date"),
+    F.col("daily.load_count").cast("long").alias("load_count"),
+    F.col("daily.play_count").cast("long").alias("play_count"),
+    F.col("daily.hours_watched").cast("double").alias("hours_watched"),
+    "pipeline_run_id",
+    F.to_timestamp("ingested_at").alias("ingested_at"),
+    "source_file",
+    F.to_date("ingested_at").alias("ingest_date"),
+    )
+
+    return latest_by(rows, ["media_id", "metric_date"], "ingested_at")
+
 
 # Turns the engagement and rewatch arrays into timeline rows. 
 # posexplode_outer gives each point a timeline_index, and arrays_zip keeps engagement and rewatch values aligned.
@@ -164,7 +174,7 @@ def transform_events(df: DataFrame) -> DataFrame:
         F.explode_outer("payload").alias("event"),
     )
 
-    return events.select(
+    rows = events.select(
         F.col("event.event_key").alias("event_key"),
         F.col("event.visitor_key").alias("visitor_key"),
         F.col("event.media_id").alias("media_id"),
@@ -188,12 +198,15 @@ def transform_events(df: DataFrame) -> DataFrame:
         F.to_timestamp("ingested_at").alias("ingested_at"),
         "source_file",
         F.to_date("ingested_at").alias("ingest_date"),
-    ).dropDuplicates(["event_key"])
+    ).filter(F.col("event_key").isNotNull())
+
+    return latest_by(rows, ["event_key"], "ingested_at")
+
 
 # Flattens visitor rollup data like created_at, last_active_at, load_count, play_count, and user agent fields.
 # It intentionally excludes 'visitor_identity'
 def transform_visitor_stats(df: DataFrame) -> DataFrame:
-    return df.select(
+    rows = df.select(
         F.col("payload.visitor_key").alias("visitor_key"),
         F.to_timestamp("payload.created_at").alias("created_at"),
         F.to_timestamp("payload.last_active_at").alias("last_active_at"),
@@ -208,7 +221,9 @@ def transform_visitor_stats(df: DataFrame) -> DataFrame:
         F.to_timestamp("ingested_at").alias("ingested_at"),
         "source_file",
         F.to_date("ingested_at").alias("ingest_date"),
-    ).dropDuplicates(["visitor_key", "pipeline_run_id"])
+    ).filter(F.col("visitor_key").isNotNull())
+
+    return latest_by(rows, ["visitor_key"], "ingested_at")
 
 
 def main() -> None:
