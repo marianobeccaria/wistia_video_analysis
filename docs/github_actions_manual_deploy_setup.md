@@ -159,6 +159,8 @@ Value:
 arn:aws:iam::<aws-account-id>:role/github-actions-cdk-deploy-role
 ```
 
+![Github Secretes & Variables](./images/wistia-github-secrets-vars.png)
+
 ## 7. Required Workflow Permissions
 
 The deploy workflow must include:
@@ -430,7 +432,7 @@ aws glue get-trigger \
 
 The CLI stop command is useful for an immediate pause. However, a later CDK deploy can reactivate the schedule if the deploy workflow is run with:
 
-![Local screenshot](./images/wistia-deploy-config-01.png)
+![Run workflow](./images/wistia-deploy-config-01.png)
 
 ```txt
 pipeline_schedule_enabled: true
