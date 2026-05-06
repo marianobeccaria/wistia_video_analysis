@@ -276,7 +276,178 @@ pipeline_schedule_enabled: true
 
 if the scheduled production trigger should be enabled.
 
-## 10. Troubleshooting
+## 10. Manage Scheduled Pipeline Runs
+
+The deploy workflow input:
+
+```txt
+pipeline_schedule_enabled
+```
+
+controls whether the Glue scheduled trigger is active after deployment.
+
+Use:
+
+```txt
+pipeline_schedule_enabled: true
+```
+
+to activate the schedule.
+
+Use:
+
+```txt
+pipeline_schedule_enabled: false
+```
+
+to deactivate the schedule.
+
+This value is passed into CDK as:
+
+```txt
+PIPELINE_SCHEDULE_ENABLED
+```
+
+The CDK stack uses it to set `start_on_creation` for the Glue scheduled trigger.
+
+The current schedule expression is:
+
+```txt
+cron(0 2 * * ? *)
+```
+
+This means the pipeline runs daily at:
+
+```txt
+02:00 UTC
+```
+
+During daylight saving time in the US Eastern timezone, that is:
+
+```txt
+10:00 PM EDT
+```
+
+During standard time in the US Eastern timezone, that is:
+
+```txt
+9:00 PM EST
+```
+
+## 11. Check Schedule State
+
+Check whether the Glue scheduled trigger is active:
+
+```bash
+aws glue get-trigger \
+  --name wistia-video-analysis-dev-workflow-scheduled-ingest \
+  --query 'Trigger.{Name:Name,State:State,Schedule:Schedule}' \
+  --output table
+```
+
+Expected active state:
+
+```txt
+State: ACTIVATED
+Schedule: cron(0 2 * * ? *)
+```
+
+Expected inactive state:
+
+```txt
+State: DEACTIVATED
+```
+
+## 12. Monitor Workflow Runs
+
+Check recent workflow runs:
+
+```bash
+aws glue get-workflow-runs \
+  --name wistia-video-analysis-dev-workflow \
+  --max-results 10 \
+  --query 'Runs[].{RunId:WorkflowRunId,Status:Status,Started:StartedOn,Completed:CompletedOn}' \
+  --output table
+```
+
+Inspect job-level status for the latest workflow run:
+
+```bash
+RUN_ID=$(aws glue get-workflow-runs \
+  --name wistia-video-analysis-dev-workflow \
+  --max-results 1 \
+  --query 'Runs[0].WorkflowRunId' \
+  --output text)
+
+aws glue get-workflow-run \
+  --name wistia-video-analysis-dev-workflow \
+  --run-id "$RUN_ID" \
+  --include-graph \
+  --query 'Run.Graph.Nodes[?Type==`JOB`].{Job:Name,Status:JobDetails.JobRuns[0].JobRunState,Started:JobDetails.JobRuns[0].StartedOn,Completed:JobDetails.JobRuns[0].CompletedOn,Error:JobDetails.JobRuns[0].ErrorMessage}' \
+  --output table
+```
+
+Check latest watermark:
+
+```bash
+aws s3 cp \
+  s3://mbeccaria-dea-wistia-analytics/state/wistia/wistia_ingestion_watermark.json \
+  -
+```
+
+Check latest gold output:
+
+```bash
+aws s3 ls s3://mbeccaria-dea-wistia-analytics/gold/wistia/ --recursive | head
+```
+
+## 13. Stop The Schedule
+
+Preferred method after the 7-day production run:
+
+```txt
+GitHub -> Actions -> Deploy -> Run workflow
+pipeline_schedule_enabled: false
+```
+
+This updates the deployed CDK-managed state so the schedule remains disabled after future deploys unless explicitly enabled again.
+
+Emergency stop from AWS CLI:
+
+```bash
+aws glue stop-trigger \
+  --name wistia-video-analysis-dev-workflow-scheduled-ingest
+```
+
+Verify it stopped:
+
+```bash
+aws glue get-trigger \
+  --name wistia-video-analysis-dev-workflow-scheduled-ingest \
+  --query 'Trigger.{Name:Name,State:State,Schedule:Schedule}' \
+  --output table
+```
+
+The CLI stop command is useful for an immediate pause. However, a later CDK deploy can reactivate the schedule if the deploy workflow is run with:
+
+![Local screenshot](./images/wistia-deploy-config-01.png)
+
+```txt
+pipeline_schedule_enabled: true
+```
+
+## 14. Start One Manual Workflow Run
+
+Use this when you want to test the full pipeline without enabling the schedule:
+
+```bash
+aws glue start-workflow-run \
+  --name wistia-video-analysis-dev-workflow
+```
+
+Then monitor it with the workflow run commands above.
+
+## 15. Troubleshooting
 
 ### Not authorized to perform sts:AssumeRoleWithWebIdentity
 
