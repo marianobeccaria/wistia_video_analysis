@@ -361,6 +361,24 @@ ORDER BY
 
 The explicit Glue tables point Athena directly at the gold Parquet data in S3. After each successful workflow run, Athena reads the newly written gold files without requiring a crawler run.
 
+## CI/CD
+
+The repository includes GitHub Actions workflows under `.github/workflows`.
+
+`ci.yml` runs on pushes and pull requests to validate:
+
+- Python syntax compilation
+- optional pytest tests when present
+- CDK synth
+
+`deploy.yml` is a manual deployment workflow. It uses GitHub Actions OIDC to assume an AWS deployment role, then runs `cdk synth` and `cdk deploy`.
+
+Required GitHub secret for deployment:
+
+```txt
+AWS_DEPLOY_ROLE_ARN
+```
+
 ## Assumptions
 
 * Channel mapping is inferred from Wistia media names and should be confirmed with the SME/business owner.
