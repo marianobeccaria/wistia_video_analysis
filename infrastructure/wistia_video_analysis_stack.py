@@ -30,6 +30,7 @@ class WistiaVideoAnalysisStack(Stack):
         bronze_prefix = os.getenv("BRONZE_PREFIX", "bronze/wistia")
         silver_prefix = os.getenv("SILVER_PREFIX", "silver/wistia")
         gold_prefix = os.getenv("GOLD_PREFIX", "gold/wistia")
+        state_prefix = os.getenv("STATE_PREFIX", "state/wistia")
 
         # Gold table names are configurable so the same stack can be reused across
         # environments without changing code. These names become Athena table names
@@ -186,10 +187,12 @@ class WistiaVideoAnalysisStack(Stack):
                 f"{bronze_prefix}/visitor_stats",
                 silver_prefix,
                 gold_prefix,
+                state_prefix,
                 "tmp",
                 "spark-logs",
                 "glue-scripts",
                 "config",
+
             ],
         )
 

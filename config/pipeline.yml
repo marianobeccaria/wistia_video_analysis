@@ -28,16 +28,22 @@ ingestion:
   max_retries: 5
   page_size: 100
   incremental_watermark_field: updated_at
+  watermark_state_file: wistia_ingestion_watermark.json
+  watermark_lookback_days: 1
+
 
 local_bronze_dir: data/bronze/wistia
 local_silver_dir: data/silver/wistia
 local_gold_dir: data/gold/wistia
+local_state_dir: data/state/wistia
 
 storage:
   s3_bucket: mbeccaria-dea-wistia-analytics
   bronze_prefix: bronze/wistia
   silver_prefix: silver/wistia
   gold_prefix: gold/wistia
+  state_prefix: state/wistia
+
 
 tables:
   dim_media: dim_media

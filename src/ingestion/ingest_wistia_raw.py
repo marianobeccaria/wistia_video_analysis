@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 
 from src.common.paths import join_path, load_yaml, resolve_layer_path, write_text
 from src.ingestion.wistia_client import WistiaClient, WistiaClientConfig
+from src.ingestion.watermark import resolve_incremental_window, write_success_watermark
+
 
 
 LOGGER = logging.getLogger(__name__)
@@ -138,6 +140,10 @@ def main() -> None:
     parser.add_argument("--wistia-secret-name", default=os.getenv("WISTIA_SECRET_NAME"))
     parser.add_argument("--start-date", default=os.getenv("WISTIA_START_DATE"))
     parser.add_argument("--end-date", default=os.getenv("WISTIA_END_DATE"))
+    parser.add_argument("--watermark-path", default=os.getenv("WISTIA_WATERMARK_PATH"))
+    parser.add_argument("--disable-watermark", action="store_true")
+    parser.add_argument("--update-watermark-on-explicit-window", action="store_true")
+
     args, _ = parser.parse_known_args()
 
     load_dotenv()
@@ -153,10 +159,29 @@ def main() -> None:
 
     api_token = get_wistia_api_token(args.wistia_secret_name)
 
-    start_date = args.start_date
-    end_date = args.end_date
-    if not start_date or not end_date:
-        start_date, end_date = default_date_window()
+    incremental_window = resolve_incremental_window(
+        config=pipeline_config,
+        storage_mode=args.storage_mode,
+        config_path=args.config,
+        explicit_start_date=args.start_date,
+        explicit_end_date=args.end_date,
+        explicit_watermark_path=args.watermark_path,
+        disable_watermark=args.disable_watermark,
+        update_watermark_on_explicit_window=args.update_watermark_on_explicit_window,
+    )
+
+    start_date = incremental_window.start_date
+    end_date = incremental_window.end_date
+
+    LOGGER.info(
+        "Using Wistia incremental window start_date=%s end_date=%s watermark_path=%s previous_watermark=%s should_update_watermark=%s",
+        start_date,
+        end_date,
+        incremental_window.watermark_path,
+        incremental_window.previous_watermark,
+        incremental_window.should_update_watermark,
+    )
+
 
 
     client = WistiaClient(
@@ -284,6 +309,19 @@ def main() -> None:
             request_params={"visitor_key": visitor_key},
             record_key=visitor_safe_key,
         )
+
+    if incremental_window.should_update_watermark:
+        write_success_watermark(
+            path=incremental_window.watermark_path,
+            config=pipeline_config,
+            run_id=run_id,
+            window=incremental_window,
+            storage_mode=args.storage_mode,
+            visitor_count=len(visitor_keys),
+            media_count=len(media_items),
+        )
+    else:
+        LOGGER.info("Skipping watermark update for this run.")
 
 
     LOGGER.info("Raw Wistia ingestion complete run_id=%s visitor_count=%s", run_id, len(visitor_keys))
