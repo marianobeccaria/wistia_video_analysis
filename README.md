@@ -1,5 +1,23 @@
 # Wistia Video Analysis
 
+## Project Summary
+
+This project delivers an end-to-end Wistia video analytics solution that ingests Wistia API data, stores it in a structured data lake, transforms it into analytics-ready tables, and presents the results through a deployed dashboard application.
+
+The solution focuses on analyzing video performance across selected Wistia media assets, including media metadata, play activity, engagement, visitor-level behavior, watch time, and date-based performance trends. Raw API responses are preserved for traceability, then refined into silver and gold datasets that support reporting, validation, and dashboard consumption.
+
+The operational platform is designed to be reproducible and production-ready. The dashboard application is deployed on AWS EC2, deployment is automated with GitHub Actions, AWS authentication uses OIDC instead of long-lived credentials, and operational access is centralized through AWS Systems Manager rather than direct SSH.
+
+At a high level, the project combines:
+
+* Wistia data ingestion from API endpoints
+* Bronze, silver, and gold data lake layers
+* PySpark-based transformations into dimensional analytics tables
+* Data quality validation for gold outputs
+* Dashboard deployment on AWS infrastructure
+* CI/CD automation through GitHub Actions
+* Secure AWS operations through OIDC and SSM
+
 ## Recommended Architecture
 
 AWS is recommended for this project:
