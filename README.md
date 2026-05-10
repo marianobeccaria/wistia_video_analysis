@@ -395,6 +395,8 @@ The repository includes GitHub Actions workflows under `.github/workflows`.
 
 `deploy.yml` is a manual deployment workflow. It uses GitHub Actions OIDC to assume an AWS deployment role, then runs `cdk synth` and `cdk deploy`.
 
+For GitHub OIDC setup, deploy role configuration, and manual deploy instructions, see: [GitHub Actions Manual CDK Deploy Setup](docs/github_actions_manual_deploy_setup.md)
+
 Once these workflows are generated, they should show under *Actions* on the repository Menu:
 
 ![GitHub Actions workflows](docs/images/wistia-deploy-config-02.png)
@@ -409,6 +411,8 @@ AWS_DEPLOY_ROLE_ARN
 
 This section maps the Wistia Video Analytics project requirements to the implemented code, infrastructure, documentation, and AWS artifacts.
 
+For the standalone requirements traceability document, see: [Requirements Traceability](docs/requirements_traceability.md)
+
 ### Summary
 
 | ID | Requirement | Status | Implementation / Evidence |
@@ -420,10 +424,10 @@ This section maps the Wistia Video Analytics project requirements to the impleme
 | FR5 | Extract visitor-level data such as IP and engagement events | Complete with privacy handling | Bronze stores raw event payloads from `/stats/events` and visitor stats from `/stats/visitors/{visitor_key}`. Silver/gold expose visitor engagement, location, browser, platform, and hashed visitor IDs while intentionally excluding raw IP, email, and visitor identity fields. |
 | FR6 | Implement pagination to fetch all pages of results | Complete | `src/ingestion/ingest_wistia_raw.py` paginates event extraction with `page` and `per_page` until Wistia returns an empty or short page. |
 | FR7 | Implement incremental ingestion based on created_at/updated_at | Complete | `src/ingestion/watermark.py` persists an incremental watermark to local/S3 state. `src/ingestion/ingest_wistia_raw.py` resolves the next incremental date window and updates the watermark only after successful ingestion. |
-| FR8 | Run this pipeline in production mode for 7 consecutive days | In progress | AWS Glue scheduled trigger is enabled for daily runs. Evidence should be recorded in `docs/production_run_log.md` for 7 consecutive successful workflow runs. |
-| FR9 | Implement a CI/CD pipeline using GitHub Actions or equivalent | Complete | `.github/workflows/ci.yml` validates Python and CDK. `.github/workflows/deploy.yml` provides manual CDK deploy through GitHub OIDC. Setup is documented in `docs/github_actions_manual_deploy_setup.md`. |
+| FR8 | Run this pipeline in production mode for 7 consecutive days | In progress | AWS Glue scheduled trigger is enabled for daily runs. Evidence should be recorded in [Production Run Logs](docs/production_run_log.md) for 7 consecutive successful workflow runs. |
+| FR9 | Implement a CI/CD pipeline using GitHub Actions or equivalent | Complete | `.github/workflows/ci.yml` validates Python and CDK. `.github/workflows/deploy.yml` provides manual CDK deploy through GitHub OIDC. Setup is documented in [GitHub Actions Manual CDK Deploy Setup](docs/github_actions_manual_deploy_setup.md). |
 | FR10 | Store results in a structured data model, DWH, or cloud database | Complete | Gold dimensional model is written to S3 as Parquet and registered in Glue Catalog for Athena: `dim_media`, `dim_visitor`, and `fact_media_engagement`. |
-| FR11 | Create final reports or dashboards for insights | Complete as Athena reporting queries | `docs/athena_reporting_queries.md` contains Athena queries for plays, watch time, watched percent, unique visitors, Facebook vs YouTube comparison, location, and device/platform breakdown. |
+| FR11 | Create final reports or dashboards for insights | Complete as Athena reporting queries | [Athena Reporting Queries](docs/athena_reporting_queries.md) contains Athena queries for plays, watch time, watched percent, unique visitors, Facebook vs YouTube comparison, location, and device/platform breakdown. |
 | FR12 | Submit a GitHub repo with documentation, pipeline code, CI/CD setup, and instructions | Complete pending final push/review | Repository contains pipeline code, CDK infrastructure, CI/CD workflows, README runbooks, reporting queries, deployment setup docs, and this requirements traceability document. |
 
 ### Architecture Artifacts
@@ -467,22 +471,16 @@ wistia_video_analytics
 
 - `.github/workflows/ci.yml`: validates Python compilation, optional tests, and CDK synth.
 - `.github/workflows/deploy.yml`: manually deploys the CDK stack through GitHub Actions OIDC.
-- `docs/github_actions_manual_deploy_setup.md`: documents reusable setup steps for GitHub OIDC and the AWS deploy role.
+- [GitHub Actions Manual CDK Deploy Setup](docs/github_actions_manual_deploy_setup.md): documents reusable setup steps for GitHub OIDC and the AWS deploy role.
 
 ### Reporting Artifacts
 
-- `docs/athena_reporting_queries.md`: Athena SQL reporting queries for project insights.
+- [Athena Reporting Queries](docs/athena_reporting_queries.md): Athena SQL reporting queries for project insights.
 - Athena console: used to validate the explicit Glue gold tables and run business queries.
 
 ### Production Run Evidence
 
-FR8 requires 7 consecutive successful production runs. Track those runs in:
-
-```txt
-docs/production_run_log.md
-```
-
-To see 7-day production run log results: [Production Run Logs](docs/production_run_log.md)
+FR8 requires 7 consecutive successful production runs. Track those runs in: [Production Run Logs](docs/production_run_log.md)
 
 For each run, capture:
 
