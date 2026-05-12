@@ -23,41 +23,39 @@ At a high level, the project combines:
 The Wistia analytics solution uses AWS-managed orchestration and storage. Wistia API responses land in a bronze raw layer, PySpark Glue jobs transform them into silver and gold Parquet datasets, and Athena queries the gold dimensional model through explicit Glue Catalog tables.
 
 ```mermaid
-flowchart LR
-    SME["SME / Analyst"] --> Athena["Amazon Athena"]
-    SME --> Dashboard["Dashboard / Reporting App"]
+%%{init: {"theme": "base", "themeVariables": {"fontSize": "18px", "fontFamily": "Arial"}, "flowchart": {"nodeSpacing": 55, "rankSpacing": 70, "curve": "basis"}} }%%
+flowchart TB
+    GitHub["GitHub Repository<br/><br/>pipeline code, CDK, docs"] --> Actions["GitHub Actions CI/CD<br/><br/>validate and deploy"]
+    Actions --> OIDC["GitHub OIDC<br/><br/>no long-lived AWS keys"]
+    OIDC --> IAMRole["AWS IAM Deploy Role<br/><br/>assumed by GitHub Actions"]
+    IAMRole --> CDK["AWS CDK Deploy<br/><br/>provisions AWS resources"]
 
-    GitHub["GitHub Repository"] --> Actions["GitHub Actions CI/CD"]
-    Actions --> OIDC["GitHub OIDC"]
-    OIDC --> IAMRole["AWS IAM Deploy Role"]
-    IAMRole --> CDK["AWS CDK Deploy"]
+    CDK --> Secrets["AWS Secrets Manager<br/><br/>Wistia API token"]
+    CDK --> GlueCatalog["AWS Glue Data Catalog<br/><br/>Athena table metadata"]
+    CDK --> GlueWorkflow["AWS Glue Workflow<br/><br/>pipeline orchestration"]
+    CDK --> DashboardInfra["Dashboard Infrastructure<br/><br/>reporting app runtime"]
 
-    CDK --> Secrets["AWS Secrets Manager<br/>Wistia API token"]
-    CDK --> S3["Amazon S3 Data Lake"]
-    CDK --> GlueCatalog["AWS Glue Data Catalog"]
-    CDK --> GlueWorkflow["AWS Glue Workflow"]
-    CDK --> DashboardInfra["Dashboard Infrastructure"]
+    Schedule["Glue Scheduled Trigger<br/><br/>daily production run"] --> GlueWorkflow
+    ManualRun["Manual Workflow Run<br/><br/>ad hoc execution"] --> GlueWorkflow
 
-    Schedule["Glue Scheduled Trigger<br/>daily production run"] --> GlueWorkflow
-    ManualRun["Manual Workflow Run"] --> GlueWorkflow
-
-    GlueWorkflow --> Ingest["Glue Job<br/>ingest bronze"]
-    Ingest --> Wistia["Wistia Stats API"]
+    GlueWorkflow --> Ingest["Glue Job: Ingest Bronze<br/><br/>calls Wistia API"]
     Secrets --> Ingest
-    Wistia --> Bronze["S3 Bronze<br/>raw JSON"]
+    Ingest --> Wistia["Wistia Stats API<br/><br/>media, stats, engagement, events, visitors"]
+    Wistia --> Bronze["S3 Bronze Layer<br/><br/>raw JSON + ingestion metadata"]
 
-    Bronze --> BronzeToSilver["Glue Job<br/>bronze to silver"]
-    BronzeToSilver --> Silver["S3 Silver<br/>clean Parquet"]
+    Bronze --> BronzeToSilver["Glue Job: Bronze To Silver<br/><br/>clean and flatten API payloads"]
+    BronzeToSilver --> Silver["S3 Silver Layer<br/><br/>clean Parquet tables"]
 
-    Silver --> SilverToGold["Glue Job<br/>silver to gold"]
-    SilverToGold --> Gold["S3 Gold<br/>dim_media<br/>dim_visitor<br/>fact_media_engagement"]
+    Silver --> SilverToGold["Glue Job: Silver To Gold<br/><br/>build dimensional model"]
+    SilverToGold --> Gold["S3 Gold Layer<br/><br/>dim_media<br/>dim_visitor<br/>fact_media_engagement"]
 
-    Gold --> Quality["Glue Job<br/>gold quality checks"]
+    Gold --> Quality["Glue Job: Gold Quality Checks<br/><br/>row counts, uniqueness, ranges, referential integrity"]
     Gold --> GlueCatalog
-    GlueCatalog --> Athena
-    Athena --> Dashboard
+    GlueCatalog --> Athena["Amazon Athena<br/><br/>SQL query engine"]
+    Athena --> Dashboard["Dashboard / Reporting App<br/><br/>business insights"]
+    Athena --> SME["SME / Analyst<br/><br/>ad hoc analysis"]
 
-    Ingest --> Watermark["S3 State<br/>incremental watermark"]
+    Ingest --> Watermark["S3 State Layer<br/><br/>incremental watermark"]
     Watermark --> Ingest
 ```
 
