@@ -18,6 +18,61 @@ At a high level, the project combines:
 * CI/CD automation through GitHub Actions
 * Secure AWS operations through OIDC and SSM
 
+## Architecture Schematic
+
+The Wistia analytics solution uses AWS-managed orchestration and storage. Wistia API responses land in a bronze raw layer, PySpark Glue jobs transform them into silver and gold Parquet datasets, and Athena queries the gold dimensional model through explicit Glue Catalog tables.
+
+```mermaid
+flowchart LR
+    SME["SME / Analyst"] --> Athena["Amazon Athena"]
+    SME --> Dashboard["Dashboard / Reporting App"]
+
+    GitHub["GitHub Repository"] --> Actions["GitHub Actions CI/CD"]
+    Actions --> OIDC["GitHub OIDC"]
+    OIDC --> IAMRole["AWS IAM Deploy Role"]
+    IAMRole --> CDK["AWS CDK Deploy"]
+
+    CDK --> Secrets["AWS Secrets Manager<br/>Wistia API token"]
+    CDK --> S3["Amazon S3 Data Lake"]
+    CDK --> GlueCatalog["AWS Glue Data Catalog"]
+    CDK --> GlueWorkflow["AWS Glue Workflow"]
+    CDK --> DashboardInfra["Dashboard Infrastructure"]
+
+    Schedule["Glue Scheduled Trigger<br/>daily production run"] --> GlueWorkflow
+    ManualRun["Manual Workflow Run"] --> GlueWorkflow
+
+    GlueWorkflow --> Ingest["Glue Job<br/>ingest bronze"]
+    Ingest --> Wistia["Wistia Stats API"]
+    Secrets --> Ingest
+    Wistia --> Bronze["S3 Bronze<br/>raw JSON"]
+
+    Bronze --> BronzeToSilver["Glue Job<br/>bronze to silver"]
+    BronzeToSilver --> Silver["S3 Silver<br/>clean Parquet"]
+
+    Silver --> SilverToGold["Glue Job<br/>silver to gold"]
+    SilverToGold --> Gold["S3 Gold<br/>dim_media<br/>dim_visitor<br/>fact_media_engagement"]
+
+    Gold --> Quality["Glue Job<br/>gold quality checks"]
+    Gold --> GlueCatalog
+    GlueCatalog --> Athena
+    Athena --> Dashboard
+
+    Ingest --> Watermark["S3 State<br/>incremental watermark"]
+    Watermark --> Ingest
+```
+
+### Data Flow
+
+1. GitHub Actions deploys the CDK stack by assuming an AWS IAM role through OIDC.
+2. AWS Glue Workflow starts either from the daily scheduled trigger or from a manual workflow run.
+3. The ingestion Glue job reads the Wistia API token from Secrets Manager and extracts media, stats, engagement, event, and visitor data from Wistia.
+4. Raw API responses are stored in the S3 bronze layer as JSON with ingestion metadata.
+5. PySpark Glue jobs transform bronze JSON to silver Parquet and then to gold dimensional tables.
+6. The gold quality job validates row counts, uniqueness, expected values, non-negative metrics, ranges, and referential integrity.
+7. Explicit Glue Catalog tables expose the gold Parquet datasets to Athena.
+8. Analysts and reporting tools query the gold model through Athena.
+9. The ingestion watermark is persisted in S3 so scheduled runs process incremental windows instead of reloading all history.
+
 ## Recommended Architecture
 
 AWS is recommended for this project:
