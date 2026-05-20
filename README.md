@@ -59,6 +59,51 @@ flowchart TB
     Watermark --> Ingest
 ```
 
+  Plain-text fallback:
+
+  ```txt
+  GitHub Repo
+      |
+      v
+  GitHub Actions CI/CD
+      |
+      v
+  GitHub OIDC -> AWS IAM Deploy Role -> AWS CDK Deploy
+                                        |
+                                        v
+          +-----------------------------+-----------------------------+
+          |                             |                             |
+          v                             v                             v
+  Secrets Manager                 Glue Workflow                 S3 Data Lake
+  Wistia API token                scheduled/manual              bronze/silver/gold/state
+          |                             |
+          |                             v
+          |                     Glue Job: ingest bronze
+          |                             |
+          +----------------------------> Wistia Stats API
+                                        |
+                                        v
+                                S3 Bronze: raw JSON
+                                        |
+                                        v
+                                Glue Job: bronze to silver
+                                        |
+                                        v
+                                S3 Silver: clean Parquet
+                                        |
+                                        v
+                                Glue Job: silver to gold
+                                        |
+                                        v
+                                S3 Gold: dimensional model
+                                        |
+                                        v
+                                Glue Job: quality checks
+
+  S3 Gold -> Glue Data Catalog -> Athena -> Dashboard / Analyst
+  S3 State <-> Ingestion Job incremental watermark
+
+
 ### Data Flow
 
 1. GitHub Actions deploys the CDK stack by assuming an AWS IAM role through OIDC.
