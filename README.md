@@ -102,7 +102,7 @@ flowchart TB
 
   S3 Gold -> Glue Data Catalog -> Athena -> Dashboard / Analyst
   S3 State <-> Ingestion Job incremental watermark
-
+```
 
 ### Data Flow
 
